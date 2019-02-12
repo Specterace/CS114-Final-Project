@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<meta charset="UTF-8">
+<html>
+
+<head>
+<title>CS 114 Final Project</title>
+<style>
+    body {
+        background-color: #EEEEEE;
+    }
+    label {
+        white-space: pre;
+    }
+</style>
+
+<!-- vertex shader -->
+<script type="x-shader/x-vertex" id="vshader-source"> 
+
+	attribute vec3 a_coords;
+	attribute vec3 a_normal;
+	
+	uniform mat4 modelview;
+	uniform mat4 projection;
+	uniform mat3 normalMatrix;
+	
+	uniform mat3 pFloorNMatrix;
+	uniform mat3 nWallNMatrix;
+	uniform mat3 sWallNMatrix;
+	uniform mat3 eWallNMatrix;
+	uniform mat3 wWallNMatrix;
+	
+	varying vec3 norMat;
+	varying vec4 coords;
+	varying vec4 eyeCoords;
+	varying vec4 vecPos;
+	
+	varying vec3 floorNorm;
+	varying vec3 nWallNorm;
+	varying vec3 sWallNorm;
+	varying vec3 eWallNorm;
+	varying vec3 wWallNorm;
+	
+	void main() {
+		coords = vec4(a_coords, 1.0);
+		eyeCoords = modelview* coords;
+		gl_Position = projection* eyeCoords;
+		vecPos = projection * eyeCoords;
+		norMat = vec3(normalMatrix *a_normal);
+		
+		//This part of the vector shade was coded specifically for the CS114 project
+		floorNorm = vec3(0.0, 0.0, 1.0);
+		floorNorm = vec3(pFloorNMatrix * floorNorm);
+		nWallNorm = vec3(0.0, 0.0, 1.0);
+		nWallNorm = vec3(nWallNMatrix * nWallNorm);
+		sWallNorm = vec3(0.0, 0.0, -1.0);
+		sWallNorm = vec3(sWallNMatrix * sWallNorm);
+		eWallNorm = vec3(0.0, 0.0, -1.0);
+		eWallNorm = vec3(eWallNMatrix * eWallNorm);
+		wWallNorm = vec3(0.0, 0.0, 1.0);
+		wWallNorm = vec3(wWallNMatrix * wWallNorm);
+	}
+</script>
+
+<!-- fragment shader -->
+<script type="x-shader/x-fragment" id="fshader-source">
+    #ifdef GL_FRAGMENT_PRECISION_HIGH
+       precision highp float;
+    #else
+       precision mediump float;
+    #endif
+	
+	varying vec3 norMat;
+	varying vec4 coords;
+	varying vec4 eyeCoords;
+	varying vec4 vecPos;
+	
+	varying vec3 floorNorm;
+	varying vec3 nWallNorm;
+	varying vec3 sWallNorm;
+	varying vec3 eWallNorm;
+	varying vec3 wWallNorm;
+	
+	uniform vec4 diffuseColor;
+    uniform vec3 specularColor;
+    uniform float specularExponent;
+	
+	uniform vec3 rSphereColor;
+	uniform vec3 ySphereColor;
+	uniform vec3 bSphereColor;
+	uniform vec3 oSphereColor;
+	uniform vec3 wallColor;
+	
+	uniform vec4 sunPosition;
+	uniform vec4 redSpherePos;
+	uniform vec4 yellowSpherePos;
+	uniform vec4 blueSpherePos;
+	uniform vec4 orangeSpherePos;
+	uniform vec4 poolFloorPos;
+	uniform vec4 nWallPos;
+	uniform vec4 sWallPos;
+	uniform vec4 eWallPos;
+	uniform vec4 wWallPos;
+	
+	uniform vec4 poolNWAPos;
+	uniform vec4 poolNWBPos;
+	uniform vec4 poolNWCPos;
+	uniform vec4 poolNWDPos;
+	uniform vec4 poolEWBPos;
+	uniform vec4 poolEWCPos;
+	uniform vec4 poolSWBPos;
+	uniform vec4 poolSWCPos;
+	
+	
+	uniform int isDay;
+	uniform int isLightSource;
+	uniform int isWater;
+	uniform int isUnderwater;
+	
+	void main() {
+		vec4 v_color = vec4(0,0,0,1);
+		vec3 color = vec3(0.0,0.0,0.0);
+		vec3 reflectColor = vec3(0.0,0.0,0.0);
+		vec3 refractColor = vec3(0.0,0.0,0.0);
+		float dot1, dot2, dot3, dotOrig, dotAns;
+		vec3 N, V, L, R, vR, I, T, rPos, yPos, bPos, oPos; 	//variables used for, among other things, reflection/light calcualtions
+		vec3 nT, lT, vT, rT, wPos, sunPosFactor;		//variables used for refraction calculations
+		vec3 pNWA, pNWB, pNWC, pNWD, pEWB, pEWC, pSWB, pSWC;	//setting aside and defining pool wall boundaries
+		vec3 AB, AD, AM, toWall;		//vectors created to be used for determining what wall/floor the viewing ray hits
+		
+		float c1, c2;	//used to store cosine of angle of incidence and angle of refraction
+		float a, b, c, iResult;	//used for sphere and plane intersection calculations
+		
+		//used to store x,y,z values of any intersections with spheres or planes in those calculations
+		float xVal = 0.0, yVal = 0.0, zVal = 0.0;
+		
+		float sphereRad = 0.7;		//radius of red and yellow spheres
+		float oSphereRad = 1.2;		//radius of orange sphere
+		float bSphereRad = 0.3;		//radius of blue sphere
+		float refIndex = 1.3;		//refractive index of water
+		float iRRat = (1.0 / refIndex);	//inverse of water refracive index (used in a lot of equations instead of always writing out "(1.0/refIndex)"
+		
+		
+		float tVal1 = 0.0;		//will store the smallest/only value that a sphere gets hit at.
+		float tVal2 = 0.0;		//used to find the value that a sphere gets hit at.
+		float tVal3 = 0.0;		//used for temporary storage in reflection problems.
+		float wTVal = 0.0;		//will store the value that the appropriate wall is hit at.
+		float dValue = 0.0;		//used to calculate wall intersections
+		
+		//used to calculate dot products for boundaries of pool sight
+		float abDot, adDot, amDot1, amDot2;	
+		
+		//used to calculate fresnel equation related stuff
+		float fPar = 0.0, fPerp = 0.0, fR = 0.0, fT = 0.0;
+		
+		//flags to keep track of any scene objects that were hit with reflection/refraction rays
+		int hitRSphere = 0, hitYSphere = 0, hitBSphere = 0, hitOSphere = 0, hitWallSurface = 0;
+		
+		//setting pool corner positions into a 3-vector by dividing by the "w" homogenous component
+		pNWA = poolNWAPos.xyz / poolNWAPos.w;
+		pNWB = poolNWBPos.xyz / poolNWBPos.w;
+		pNWC = poolNWCPos.xyz / poolNWCPos.w;
+		pNWD = poolNWDPos.xyz / poolNWDPos.w;
+		pEWB = poolEWBPos.xyz / poolEWBPos.w;
+		pEWC = poolEWCPos.xyz / poolEWCPos.w;
+		pSWB = poolSWBPos.xyz / poolSWBPos.w;
+		pSWC = poolSWCPos.xyz / poolSWCPos.w;
+		
+		//ambient light from main source
+		if (isLightSource == 1) {
+			color += 1.0 * diffuseColor.rgb;
+		} else if (isWater == 1) {
+			color += 0.1 * diffuseColor.rgb;
+		} else if (isDay == 1) {
+			color += 0.4 * diffuseColor.rgb;
+		}
+		
+		N = normalize(norMat);
+		V = normalize(-eyeCoords.xyz);
+		
+		rPos = (redSpherePos.xyz / redSpherePos.w);
+		yPos = (yellowSpherePos.xyz / yellowSpherePos.w);
+		bPos = (blueSpherePos.xyz / blueSpherePos.w);
+		oPos = (orangeSpherePos.xyz / orangeSpherePos.w);
+		
+		
+		////////Nearly all "isWater" shader code was written from scratch specifically for the CS114 final project (it is a new implementation with no analog in other projects/coursework)
+		////////The ONLY thing borrowed from another project is the equations for light-influeced color as specified by the Phong illumination model I implemented in that project
+		////////I will specifially note the places where those equations are to be found. All other implementation-based code was written from scratch.
+		if (isWater == 1) {
+			if ( sunPosition.w == 0.0 ) {
+				sunPosFactor = sunPosition.xyz;
+				L = normalize( sunPosFactor.xyz );
+			} else {
+				sunPosFactor = sunPosition.xyz / sunPosition.w;
+				L = normalize( sunPosFactor.xyz - eyeCoords.xyz);			//array to position of sun (a light source)
+			}
+			I = normalize(eyeCoords.xyz);
+			c1 = dot(N,-I);
+			
+			//////////////////////////////////Reflection stuff
+			vR = normalize((2.0 * N)*(c1) + I);
+			//calculating if reflected ray hit the red sphere, and if so, where
+			a = pow(vR.x,2.0) + pow(vR.y,2.0) + pow(vR.z,2.0);
+			b = 2.0 * ((vR.x * (eyeCoords.x - rPos.x)) + (vR.y * (eyeCoords.y - rPos.y)) + (vR.z * (eyeCoords.z - rPos.z)));
+			c = pow(rPos.x,2.0) + pow(rPos.y,2.0) + pow(rPos.z,2.0) + pow(eyeCoords.x,2.0) + pow(eyeCoords.y,2.0) + pow(eyeCoords.z,2.0) - pow(sphereRad,2.0);
+			c = c - (2.0 * ((rPos.x * eyeCoords.x) + (rPos.y * eyeCoords.y) + (rPos.z * eyeCoords.z)));
+			iResult = pow(b, 2.0) - (4.0*a*c);
+			if (iResult >= 0.0) {
+				hitRSphere = 1;
+				dotOrig = dot(I,vR);		//storing the original dot product, to check orientations later
+				if (iResult == 0.0) {
+					tVal1 = ((-1.0 * b) / (2.0 * a));
+				} else if (iResult > 0.0) {
+					tVal1 = (((-1.0 * b) + pow(iResult, 0.5))/ (2.0 * a));	//plus the square 
+					tVal2 = (((-1.0 * b) - pow(iResult, 0.5))/ (2.0 * a));	//minus the square
+					if (tVal2 < tVal1) {
+						tVal1 = tVal2;
+					}
+				}
+				if ((dot(I,(tVal1 * vR)) / dotOrig) < 0.0) {
+					hitRSphere = 0;
+				} else {
+					nT = normalize((eyeCoords.xyz + (tVal1 * vR.xyz)) - (rPos.xyz));
+					lT = normalize(sunPosFactor.xyz - (eyeCoords.xyz + (tVal1 * vR.xyz)));		//get sunlight as if there was no water
+					vT = normalize(-1.0 * (eyeCoords.xyz + (tVal1 * vR.xyz)));
+					dot1 = dot(lT, nT);
+					rT = (2.0 * nT)*(dot1) - lT;
+					dot2 = dot(rT, vT);
+					//These equations are derived from the Phong illumination model colors I implemented in the 112 final project
+					reflectColor += (0.8  * max(dot1,0.0)) * rSphereColor.rgb;
+					reflectColor += (0.4  * pow(max(dot2,0.0),specularExponent)) * specularColor;
+					//reflectColor += ((0.5) * rSphereColor.rgb);
+				}				
+			}
+			
+			//calculating if reflected ray hit yellow sphere (if ray did not hit red sphere)
+			if (hitRSphere == 0) {
+				//determining if reflected ray hit the yellow sphere, and if so, where
+				a = pow(vR.x,2.0) + pow(vR.y,2.0) + pow(vR.z,2.0);
+				b = 2.0 * ((vR.x * (eyeCoords.x - yPos.x)) + (vR.y * (eyeCoords.y - yPos.y)) + (vR.z * (eyeCoords.z - yPos.z)));
+				c = pow(yPos.x,2.0) + pow(yPos.y,2.0) + pow(yPos.z,2.0) + pow(eyeCoords.x,2.0) + pow(eyeCoords.y,2.0) + pow(eyeCoords.z,2.0) - pow(sphereRad,2.0);
+				c = c - (2.0 * ((yPos.x * eyeCoords.x) + (yPos.y * eyeCoords.y) + (yPos.z * eyeCoords.z)));
+				iResult = pow(b, 2.0) - (4.0*a*c);
+				if (iResult >= 0.0) {
+					hitYSphere = 1;
+					dotOrig = dot(I,vR);		//storing the original dot product, to check orientations later
+					if (iResult == 0.0) {
+						tVal1 = ((-1.0 * b) / (2.0 * a));
+					} else if (iResult > 0.0) {
+						tVal1 = (((-1.0 * b) + pow(iResult, 0.5))/ (2.0 * a));	//plus the square 
+						tVal2 = (((-1.0 * b) - pow(iResult, 0.5))/ (2.0 * a));	//minus the square
+						if (tVal2 < tVal1) {
+							tVal1 = tVal2;
+						}
+					}
+					if ((dot(I,(tVal1 * vR)) / dotOrig) < 0.0) {
+						hitYSphere = 0;
+					} else {
+						nT = normalize((eyeCoords.xyz + (tVal1 * vR.xyz)) - (yPos.xyz));
+						lT = normalize(sunPosFactor.xyz - (eyeCoords.xyz + (tVal1 * vR.xyz)));	//get sunlight as if there was no water
+						vT = normalize(-1.0 * (eyeCoords.xyz + (tVal1 * vR.xyz)));
+						dot1 = dot(lT, nT);
+						rT = (2.0 * nT)*(dot1) - lT;
+						dot2 = dot(rT, vT);
+						//These equations are derived from the Phong illumination model colors I implemented in the 112 final project
+						reflectColor += (0.8  * max(dot1,0.0)) * ySphereColor.rgb;
+						reflectColor += (0.4  * pow(max(dot2,0.0),specularExponent)) * specularColor;
+						//reflectColor += ((0.5) * ySphereColor.rgb);
+					}
+				}
+			}
+			
+			//calculating if reflected ray hit ornage sphere if ray did not hit red or orange sphere (due to position of orange sphere, only reflected rays can hit it).
+			if (hitRSphere == 0) {
+				if (hitYSphere == 0) {
+					//determining if reflected ray hit the orange sphere, and if so, where
+					a = pow(vR.x,2.0) + pow(vR.y,2.0) + pow(vR.z,2.0);
+					b = 2.0 * ((vR.x * (eyeCoords.x - oPos.x)) + (vR.y * (eyeCoords.y - oPos.y)) + (vR.z * (eyeCoords.z - oPos.z)));
+					c = pow(oPos.x,2.0) + pow(oPos.y,2.0) + pow(oPos.z,2.0) + pow(eyeCoords.x,2.0) + pow(eyeCoords.y,2.0) + pow(eyeCoords.z,2.0) - pow(oSphereRad,2.0);
+					c = c - (2.0 * ((oPos.x * eyeCoords.x) + (oPos.y * eyeCoords.y) + (oPos.z * eyeCoords.z)));
+					iResult = pow(b, 2.0) - (4.0*a*c);
+					if (iResult >= 0.0) {
+						hitOSphere = 1;	
+						if (iResult == 0.0) {
+							tVal1 = ((-1.0 * b) / (2.0 * a));
+						} else if (iResult > 0.0) {
+							tVal1 = (((-1.0 * b) + pow(iResult, 0.5))/ (2.0 * a));	//plus the square 
+							tVal2 = (((-1.0 * b) - pow(iResult, 0.5))/ (2.0 * a));	//minus the square
+							if (tVal2 < tVal1) {
+								tVal1 = tVal2;
+							}
+						}
+						nT = normalize((eyeCoords.xyz + (tVal1 * vR.xyz)) - (oPos.xyz));
+						lT = normalize(sunPosFactor.xyz - (eyeCoords.xyz + (tVal1 * vR.xyz)));
+						vT = normalize(-1.0 * (eyeCoords.xyz + (tVal1 * vR.xyz)));
+						dot1 = dot(lT, nT);
+						rT = (2.0 * nT)*(dot1) - lT;
+						dot2 = dot(rT, vT);
+						//These equations are derived from the Phong illumination model colors I implemented in the 112 final project
+						//reflectColor += (0.8  * max(dot1,0.0)) * oSphereColor.rgb;
+						//reflectColor += (0.4  * pow(max(dot2,0.0),specularExponent)) * specularColor;
+						//For this sphere, I am specifically using the original color to illustrate the reflection capabilities
+						reflectColor += oSphereColor.rgb;
+					}
+				}
+			}
+			
+			//if no sphere was hit by the reflected ray, check to see if it hit a wall instead
+			if (hitRSphere == 0) {
+				if (hitYSphere == 0) {
+					if (hitOSphere == 0) {
+					
+						//calculate where it his the north wall's "plane"
+				
+						nT = normalize(nWallNorm);
+						wPos = (nWallPos.xyz / nWallPos.w);
+						dValue = (-1.0) * ((nT.x * wPos.x) + (nT.y * wPos.y) + (nT.z * wPos.z));
+						wTVal = (-1.0) * (((nT.x * eyeCoords.x) + (nT.y * eyeCoords.y) + (nT.z * eyeCoords.z) + dValue) / ((nT.x * vR.x) + (nT.y * vR.y) + (nT.z * vR.z)));
+						xVal = eyeCoords.x + (vR.x * wTVal);
+						yVal = eyeCoords.y + (vR.y * wTVal);	
+						zVal = eyeCoords.z + (vR.z * wTVal);
+						
+						dotOrig = dot(I,vR);		//storing the original dot product, to check orientations later
+						toWall = vR * wTVal;
+						if ((dot(I,(toWall)) / dotOrig) < 0.0) {	//see if it hits the wall without using a negative value
+							hitWallSurface = 0;
+						} else {
+							//see if it hits north wall within limits
+							AB = pNWB - pNWA;
+							AD = pNWD - pNWA;
+							AM = vec3(xVal,yVal,zVal) - pNWA;
+							amDot1 = dot(AM,AB);
+							amDot2 = dot(AM,AD);
+							if (amDot1 >= 0.0) {
+								if (amDot2 >= 0.0) {
+									if (amDot1 < (dot(AB,AB))) {
+										if (amDot2 < (dot(AD,AD))) {
+											hitWallSurface = 1;
+										}
+									}
+								}
+							}
+						}
+				
+					//calculate where it his the east wall's "plane"
+						if (hitWallSurface == 0) {
+							nT = normalize(eWallNorm);
+							wPos = (eWallPos.xyz / eWallPos.w);
+							dValue = (-1.0) * ((nT.x * wPos.x) + (nT.y * wPos.y) + (nT.z * wPos.z));
+							wTVal = (-1.0) * (((nT.x * eyeCoords.x) + (nT.y * eyeCoords.y) + (nT.z * eyeCoords.z) + dValue) / ((nT.x * vR.x) + (nT.y * vR.y) + (nT.z * vR.z)));
+							xVal = eyeCoords.x + (vR.x * wTVal);
+							yVal = eyeCoords.y + (vR.y * wTVal);	
+							zVal = eyeCoords.z + (vR.z * wTVal);
+							
+							dotOrig = dot(I,vR);		//storing the original dot product, to check orientations later
+							toWall = vR * wTVal;
+							if ((dot(I,(toWall)) / dotOrig) < 0.0) {	//see if it hits the wall without using a negative value
+								hitWallSurface = 0;
+							} else {
+								//see if it hits east wall within limits
+								AB = pEWB - pNWB;
+								AD = pNWC - pNWB;
+								AM = vec3(xVal,yVal,zVal) - pNWB;
+								amDot1 = dot(AM,AB);
+								amDot2 = dot(AM,AD);
+								if (amDot1 > 0.0) {
+									if (amDot2 > 0.0) {
+										if (amDot1 < (dot(AB,AB))) {
+											if (amDot2 < (dot(AD,AD))) {
+												hitWallSurface = 1;
+											}
+										}
+									}
+								}
+							}
+						}
+				
+					//calculate where it his the south wall's "plane"
+						if (hitWallSurface == 0) {
+							nT = normalize(sWallNorm);
+							wPos = (sWallPos.xyz / sWallPos.w);
+							dValue = (-1.0) * ((nT.x * wPos.x) + (nT.y * wPos.y) + (nT.z * wPos.z));
+							wTVal = (-1.0) * (((nT.x * eyeCoords.x) + (nT.y * eyeCoords.y) + (nT.z * eyeCoords.z) + dValue) / ((nT.x * vR.x) + (nT.y * vR.y) + (nT.z * vR.z)));
+							xVal = eyeCoords.x + (vR.x * wTVal);
+							yVal = eyeCoords.y + (vR.y * wTVal);	
+							zVal = eyeCoords.z + (vR.z * wTVal);
+							
+							dotOrig = dot(I,vR);		//storing the original dot product, to check orientations later
+							toWall = vR * wTVal;
+							if ((dot(I,(toWall)) / dotOrig) < 0.0) {	//see if it hits the wall without using a negative value
+								hitWallSurface = 0;
+							} else {
+								//see if it hits south wall within limits
+						
+								AB = pSWB - pEWB;
+								AD = pEWC - pEWB;
+								AM = vec3(xVal,yVal,zVal) - pEWB;
+								amDot1 = dot(AM,AB);
+								amDot2 = dot(AM,AD);
+								if (amDot1 >= 0.0) {
+									if (amDot2 >= 0.0) {
+										if (amDot1 < (dot(AB,AB))) {
+											if (amDot2 < (dot(AD,AD))) {
+												hitWallSurface = 1;
+											}
+										}
+									}
+								}
+							}
+						}
+				
+					//calculate where it his the west wall's "plane"
+						if (hitWallSurface == 0) {
+							nT = normalize(wWallNorm);
+							wPos = (wWallPos.xyz / wWallPos.w);
+							dValue = (-1.0) * ((nT.x * wPos.x) + (nT.y * wPos.y) + (nT.z * wPos.z));
+							wTVal = (-1.0) * (((nT.x * eyeCoords.x) + (nT.y * eyeCoords.y) + (nT.z * eyeCoords.z) + dValue) / ((nT.x * vR.x) + (nT.y * vR.y) + (nT.z * vR.z)));
+							xVal = eyeCoords.x + (vR.x * wTVal);
+							yVal = eyeCoords.y + (vR.y * wTVal);	
+							zVal = eyeCoords.z + (vR.z * wTVal);
+							
+							dotOrig = dot(I,vR);		//storing the original dot product, to check orientations later
+							toWall = vR * wTVal;
+							if ((dot(I,(toWall)) / dotOrig) < 0.0) {	//see if it hits the wall without using a negative value
+								hitWallSurface = 0;
+							} else {
+								//see if it hits west wall within limits
+						
+								AB = pNWA - pSWB;
+								AD = pSWC - pSWB;
+								AM = vec3(xVal,yVal,zVal) - pSWB;
+								amDot1 = dot(AM,AB);
+								amDot2 = dot(AM,AD);
+								if (amDot1 >= 0.0) {
+									if (amDot2 >= 0.0) {
+										if (amDot1 < (dot(AB,AB))) {
+											if (amDot2 < (dot(AD,AD))) {
+												hitWallSurface = 1;
+											}
+										}
+									}	
+								}
+							}
+						}
+						if (hitWallSurface == 1) {
+							lT = normalize(sunPosFactor.xyz - (eyeCoords.xyz + (vR.xyz * wTVal)));		//gettting lT, you already have nT
+							vT = normalize(eyeCoords.xyz + (vR.xyz * wTVal));
+							vT = (-1.0) * vT;
+							dot1 = dot(lT, nT);
+							rT = ((2.0 * nT)* dot1) - lT;
+							dot2 = dot(rT, vT);
+							//These equations are derived from the Phong illumination model colors I implemented in the 112 final project
+							reflectColor += (0.8  * max(dot1,0.0)) * wallColor.rgb;
+							reflectColor += (0.4  * pow(max(dot2,0.0),specularExponent)) * specularColor;
+						} else {
+							dot2 = dot(vR, V);
+							//These equations are derived from the Phong illumination model colors I implemented in the 112 final project
+							reflectColor += (0.4  * pow(max(dot2,0.0),specularExponent)) * specularColor;
+						}
+					}
+				}
+			}
+			
+			//////////////////////////////////Refraction stuff
+			
+			//Calculating the cosine of angle of refraction and vector of refracted ray from surface vertex.
+			c2 = (1.0 - (pow(iRRat,2.0) * (1.0 - pow(c1,2.0))));
+			c2 = pow(c2,0.5);
+			T = normalize(((iRRat * I) + (((iRRat * c1) - c2) * N)));
+			
+			//resetting collision flags
+			hitRSphere = 0;
+			hitYSphere = 0;
+			hitOSphere = 0;
+			hitWallSurface = 0;
+			
+			//calculating if transmitted ray hit red sphere, and if so, where
+			a = pow(T.x,2.0) + pow(T.y,2.0) + pow(T.z,2.0);
+			b = 2.0 * ((T.x * (eyeCoords.x - rPos.x)) + (T.y * (eyeCoords.y - rPos.y)) + (T.z * (eyeCoords.z - rPos.z)));
+			c = pow(rPos.x,2.0) + pow(rPos.y,2.0) + pow(rPos.z,2.0) + pow(eyeCoords.x,2.0) + pow(eyeCoords.y,2.0) + pow(eyeCoords.z,2.0) - pow(sphereRad,2.0);
+			c = c - (2.0 * ((rPos.x * eyeCoords.x) + (rPos.y * eyeCoords.y) + (rPos.z * eyeCoords.z)));
+			iResult = pow(b, 2.0) - (4.0*a*c);
+			if (iResult >= 0.0) {
+				hitRSphere = 1;
+				
+				if (iResult == 0.0) {
+					tVal1 = ((-1.0 * b) / (2.0 * a));
+				} else if (iResult > 0.0) {
+					tVal1 = (((-1.0 * b) + pow(iResult, 0.5))/ (2.0 * a));	//plus the square 
+					tVal2 = (((-1.0 * b) - pow(iResult, 0.5))/ (2.0 * a));	//minus the square
+					if (tVal2 < tVal1) {
+						tVal1 = tVal2;
+					}
+				}
+				nT = normalize((eyeCoords.xyz + (tVal1 * T.xyz)) - (rPos.xyz));
+				lT = normalize(sunPosFactor.xyz - (eyeCoords.xyz + (tVal1 * T.xyz)));		//get sunlight as if there was no water
+				vT = normalize(-1.0 * (eyeCoords.xyz + (tVal1 * T.xyz)));
+				dot1 = dot(lT, nT);
+				rT = (2.0 * nT)*(dot1) - lT;
+				dot2 = dot(rT, vT);
+				//These equations are derived from the Phong illumination model colors I implemented in the 112 final project
+				refractColor += (0.8  * max(dot1,0.0)) * rSphereColor.rgb;
+				refractColor += (0.4  * pow(max(dot2,0.0),specularExponent)) * specularColor;
+			}
+			
+			//calculating if transmitted ray hit yellow sphere (if ray did not hit red sphere)
+			if (hitRSphere == 0) {
+				//calculating if transmitted ray hit yellow sphere, and if so, where
+				a = pow(T.x,2.0) + pow(T.y,2.0) + pow(T.z,2.0);
+				b = 2.0 * ((T.x * (eyeCoords.x - yPos.x)) + (T.y * (eyeCoords.y - yPos.y)) + (T.z * (eyeCoords.z - yPos.z)));
+				c = pow(yPos.x,2.0) + pow(yPos.y,2.0) + pow(yPos.z,2.0) + pow(eyeCoords.x,2.0) + pow(eyeCoords.y,2.0) + pow(eyeCoords.z,2.0) - pow(sphereRad,2.0);
+				c = c - (2.0 * ((yPos.x * eyeCoords.x) + (yPos.y * eyeCoords.y) + (yPos.z * eyeCoords.z)));
+				iResult = pow(b, 2.0) - (4.0*a*c);
+				if (iResult >= 0.0) {
+					hitYSphere = 1;
+					
+					if (iResult == 0.0) {
+						tVal1 = ((-1.0 * b) / (2.0 * a));
+					} else if (iResult > 0.0) {
+						tVal1 = (((-1.0 * b) + pow(iResult, 0.5))/ (2.0 * a));	//plus the square 
+						tVal2 = (((-1.0 * b) - pow(iResult, 0.5))/ (2.0 * a));	//minus the square
+						if (tVal2 < tVal1) {
+							tVal1 = tVal2;
+						}
+					}
+					nT = normalize((eyeCoords.xyz + (tVal1 * T.xyz)) - (yPos.xyz));
+					lT = normalize(sunPosFactor.xyz - (eyeCoords.xyz + (tVal1 * T.xyz)));	//get sunlight as if there was no water
+					vT = normalize(-1.0 * (eyeCoords.xyz + (tVal1 * T.xyz)));
+					dot1 = dot(lT, nT);
+					rT = (2.0 * nT)*(dot1) - lT;
+					dot2 = dot(rT, vT);
+					//These equations are derived from the Phong illumination model colors I implemented in the 112 final project
+					refractColor += (0.8  * max(dot1,0.0)) * ySphereColor.rgb;
+					refractColor += (0.4  * pow(max(dot2,0.0),specularExponent)) * specularColor;
+				}
+			}
+			
+			//calculating if transmitted ray hit the blue sphere, which is completely underwater. Due to this, only transmitted/refracted rays can hit the blue sphere
+			if (hitRSphere == 0) {
+				if (hitYSphere == 0) {
+					//calculating if transmitted ray hit blue sphere, and if so, where
+					a = pow(T.x,2.0) + pow(T.y,2.0) + pow(T.z,2.0);
+					b = 2.0 * ((T.x * (eyeCoords.x - bPos.x)) + (T.y * (eyeCoords.y - bPos.y)) + (T.z * (eyeCoords.z - bPos.z)));
+					c = pow(bPos.x,2.0) + pow(bPos.y,2.0) + pow(bPos.z,2.0) + pow(eyeCoords.x,2.0) + pow(eyeCoords.y,2.0) + pow(eyeCoords.z,2.0) - pow(bSphereRad,2.0);
+					c = c - (2.0 * ((bPos.x * eyeCoords.x) + (bPos.y * eyeCoords.y) + (bPos.z * eyeCoords.z)));
+					iResult = pow(b, 2.0) - (4.0*a*c);
+					if (iResult >= 0.0) {
+						hitBSphere = 1;	
+						if (iResult == 0.0) {
+							tVal1 = ((-1.0 * b) / (2.0 * a));
+						} else if (iResult > 0.0) {
+							tVal1 = (((-1.0 * b) + pow(iResult, 0.5))/ (2.0 * a));	//plus the square 
+							tVal2 = (((-1.0 * b) - pow(iResult, 0.5))/ (2.0 * a));	//minus the square
+							if (tVal2 < tVal1) {
+								tVal1 = tVal2;
+							}
+						}
+						nT = normalize((eyeCoords.xyz + (tVal1 * T.xyz)) - (bPos.xyz));
+						lT = normalize(sunPosFactor.xyz - (eyeCoords.xyz + (tVal1 * T.xyz)));	//get sunlight as if there was no water
+						vT = normalize(-1.0 * (eyeCoords.xyz + (tVal1 * T.xyz)));
+						dot1 = dot(lT, nT);
+						rT = (2.0 * nT)*(dot1) - lT;
+						dot2 = dot(rT, vT);
+						//These equations are derived from the Phong illumination model colors I implemented in the 112 final project
+						refractColor += (0.8  * max(dot1,0.0)) * bSphereColor.rgb;
+						refractColor += (0.4  * pow(max(dot2,0.0),specularExponent)) * specularColor;
+					}
+				}
+			}
+			
+			//if no sphere was hit
+			if (hitRSphere == 0) {
+				if (hitYSphere == 0) {
+					if (hitBSphere == 0) {
+					
+						//calculate where it his the north wall
+				
+						nT = normalize(nWallNorm);
+						wPos = (nWallPos.xyz / nWallPos.w);
+						dValue = (-1.0) * ((nT.x * wPos.x) + (nT.y * wPos.y) + (nT.z * wPos.z));
+						wTVal = (-1.0) * (((nT.x * eyeCoords.x) + (nT.y * eyeCoords.y) + (nT.z * eyeCoords.z) + dValue) / ((nT.x * T.x) + (nT.y * T.y) + (nT.z * T.z)));
+						xVal = eyeCoords.x + (T.x * wTVal);
+						yVal = eyeCoords.y + (T.y * wTVal);	
+						zVal = eyeCoords.z + (T.z * wTVal);
+				
+						//see if it hits north wall within limits
+						AB = pNWB - pNWA;
+						AD = pNWD - pNWA;
+						AM = vec3(xVal,yVal,zVal) - pNWA;
+						amDot1 = dot(AM,AB);
+						amDot2 = dot(AM,AD);
+						if (amDot1 >= 0.0) {
+							if (amDot2 >= 0.0) {
+								if (amDot1 < (dot(AB,AB))) {
+									if (amDot2 < (dot(AD,AD))) {
+										hitWallSurface = 1;
+									}
+								}
+							}
+						}
+				
+						//calculate where it his the east wall
+						if (hitWallSurface == 0) {
+							nT = normalize(eWallNorm);
+							wPos = (eWallPos.xyz / eWallPos.w);
+							dValue = (-1.0) * ((nT.x * wPos.x) + (nT.y * wPos.y) + (nT.z * wPos.z));
+							wTVal = (-1.0) * (((nT.x * eyeCoords.x) + (nT.y * eyeCoords.y) + (nT.z * eyeCoords.z) + dValue) / ((nT.x * T.x) + (nT.y * T.y) + (nT.z * T.z)));
+							xVal = eyeCoords.x + (T.x * wTVal);
+							yVal = eyeCoords.y + (T.y * wTVal);	
+							zVal = eyeCoords.z + (T.z * wTVal);
+							//see if it hits east wall within limits
+							AB = pEWB - pNWB;
+							AD = pNWC - pNWB;
+							AM = vec3(xVal,yVal,zVal) - pNWB;
+							amDot1 = dot(AM,AB);
+							amDot2 = dot(AM,AD);
+							if (amDot1 > 0.0) {
+								if (amDot2 > 0.0) {
+									if (amDot1 < (dot(AB,AB))) {
+										if (amDot2 < (dot(AD,AD))) {
+											hitWallSurface = 1;
+										}
+									}
+								}
+							}
+						}
+				
+						//calculate where it his the south wall
+						if (hitWallSurface == 0) {
+							nT = normalize(sWallNorm);
+							wPos = (sWallPos.xyz / sWallPos.w);
+							dValue = (-1.0) * ((nT.x * wPos.x) + (nT.y * wPos.y) + (nT.z * wPos.z));
+							wTVal = (-1.0) * (((nT.x * eyeCoords.x) + (nT.y * eyeCoords.y) + (nT.z * eyeCoords.z) + dValue) / ((nT.x * T.x) + (nT.y * T.y) + (nT.z * T.z)));
+							xVal = eyeCoords.x + (T.x * wTVal);
+							yVal = eyeCoords.y + (T.y * wTVal);	
+							zVal = eyeCoords.z + (T.z * wTVal);
+							//see if it hits south wall within limits
+					
+							AB = pSWB - pEWB;
+							AD = pEWC - pEWB;
+							AM = vec3(xVal,yVal,zVal) - pEWB;
+							amDot1 = dot(AM,AB);
+							amDot2 = dot(AM,AD);
+							if (amDot1 >= 0.0) {
+								if (amDot2 >= 0.0) {
+									if (amDot1 < (dot(AB,AB))) {
+										if (amDot2 < (dot(AD,AD))) {
+											hitWallSurface = 1;
+										}
+									}
+								}
+							}
+						}
+				
+						//calculate where it his the west wall
+						if (hitWallSurface == 0) {
+							nT = normalize(wWallNorm);
+							wPos = (wWallPos.xyz / wWallPos.w);
+							dValue = (-1.0) * ((nT.x * wPos.x) + (nT.y * wPos.y) + (nT.z * wPos.z));
+							wTVal = (-1.0) * (((nT.x * eyeCoords.x) + (nT.y * eyeCoords.y) + (nT.z * eyeCoords.z) + dValue) / ((nT.x * T.x) + (nT.y * T.y) + (nT.z * T.z)));
+							xVal = eyeCoords.x + (T.x * wTVal);
+							yVal = eyeCoords.y + (T.y * wTVal);	
+							zVal = eyeCoords.z + (T.z * wTVal);
+							//see if it hits west wall within limits
+						
+							AB = pNWA - pSWB;
+							AD = pSWC - pSWB;
+							AM = vec3(xVal,yVal,zVal) - pSWB;
+							amDot1 = dot(AM,AB);
+							amDot2 = dot(AM,AD);
+							if (amDot1 >= 0.0) {
+								if (amDot2 >= 0.0) {
+									if (amDot1 < (dot(AB,AB))) {
+										if (amDot2 < (dot(AD,AD))) {
+											hitWallSurface = 1;
+										}
+									}
+								}
+							}
+						}
+					
+						//calculate where it hits the floor
+						if (hitWallSurface == 0) {
+							nT = normalize(floorNorm);
+							wPos = (poolFloorPos.xyz / poolFloorPos.w);
+							dValue = (-1.0) * ((nT.x * wPos.x) + (nT.y * wPos.y) + (nT.z * wPos.z));
+							wTVal = (-1.0) * (((nT.x * eyeCoords.x) + (nT.y * eyeCoords.y) + (nT.z * eyeCoords.z) + dValue) / ((nT.x * T.x) + (nT.y * T.y) + (nT.z * T.z)));
+							xVal = eyeCoords.x + (T.x * wTVal);
+							yVal = eyeCoords.y + (T.y * wTVal);	
+							zVal = eyeCoords.z + (T.z * wTVal);
+							//see if it hits floor within limits
+						
+							AB = pNWC - pNWD;
+							AD = pSWC - pNWD;
+							AM = vec3(xVal,yVal,zVal) - pNWD;
+							amDot1 = dot(AM,AB);
+							amDot2 = dot(AM,AD);
+							if (amDot1 >= 0.0) {
+								if (amDot2 >= 0.0) {
+									if (amDot1 < (dot(AB,AB))) {
+										if (amDot2 < (dot(AD,AD))) {
+											hitWallSurface = 1;
+										}
+									}
+								}
+							}
+						}
+
+						lT = normalize(sunPosFactor.xyz - (eyeCoords.xyz + (T.xyz * wTVal)));		//gettting lT, you already have nT
+						vT = normalize(eyeCoords.xyz + (T.xyz * wTVal));
+						vT = (-1.0) * vT;
+						dot1 = dot(lT, nT);
+						rT = ((2.0 * nT)* dot1) - lT;
+						dot2 = dot(rT, vT);
+						//These equations are derived from the Phong illumination model colors I implemented in the 112 final project
+						refractColor += (0.8  * max(dot1,0.0)) * wallColor.rgb;
+						refractColor += (0.4  * pow(max(dot2,0.0),specularExponent)) * specularColor;
+					}
+				}
+				
+			}
+			
+			//Fresnel Equation/Coefficient implementation
+			fPar = ((1.0 * c1) - (refIndex * c2)) / ((1.0 * c1) + (refIndex * c2));
+			fPar = pow(fPar,2.0);
+			fPerp = ((1.0 * c2) - (refIndex * c1)) / ((1.0 * c2) + (refIndex * c1));
+			fPerp = pow(fPerp,2.0);
+			fR = (fPar + fPerp) / 2.0;
+			fT = 1.0 - fR;
+			
+			color += (fT * refractColor.rgb);
+			color += (fR * reflectColor.rgb);
+		}
+		
+		//Colors calculated for all other fragments that are not part of the water mesh
+		//This code is unchanged from the Phong illumination implementation I used in the CS112 final project that
+		//served as a foundation for this CS 114 Final Project
+		if (isDay == 1) {
+			//sun light
+			if ( sunPosition.w == 0.0 ) {
+				L = normalize( sunPosition.xyz );
+			} else {
+				L = normalize( sunPosition.xyz/sunPosition.w - eyeCoords.xyz);			//array to position of sun (a light source)
+			}
+			
+			R = (2.0 * N)*(dot(L,N)) - L;
+			dot1 = dot(L,N);
+			dot2 = dot(R,V);
+			
+			//colors calculated for all fragments that are NOT part of the water mesh
+			if (isWater == 0) {
+				//These are the original equations of the Phong illumination model colors I implemented in the 112 final project (which the "isWater" color calculations are based on)
+				color += (0.8  * max(dot1,0.0)) * diffuseColor.rgb;
+				color += (0.4  * pow(max(dot2,0.0),specularExponent)) * specularColor;
+			}
+		
+		}
+		
+		//total color from all light sources
+		v_color = vec4(color, diffuseColor.a);
+		gl_FragColor = v_color;
+	}
+
+</script>
+
+<!--<script src="gl-matrix-min.js"></script>
+
+-->
+
+<script src="gl-matrix-min.js"></script>
+<script src="trackball-rotator.js"></script>
+<script src="models.js"></script>
+<script src="finalAssignment.js"></script>
+<script src="webgl-utils.js"></script> 
+</head>
+
+
+<body onload="init()">
+Name: Oscar Choy<br/>
+Student ID: 53555169<br/>
+
+<p style="width:600px; text-align: left;">
+	 <label><b>Animate</b><input type="checkbox" id="animate"></label>
+</p>
+
+<div id="canvas-holder">
+   <canvas width=800 height=800 id="myGLCanvas" style="background-color:red"></canvas>
+</div>
+
+</body>
+
+</html>
+
